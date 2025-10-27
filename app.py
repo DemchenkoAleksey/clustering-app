@@ -319,28 +319,54 @@ def plot_decision_tree_interactive(tree_clf, X, y, target_values, feature_names,
     def get_node_text_and_color(node_id):
         samples_count = tree_.n_node_samples[node_id]
         sample_idx = get_node_samples(tree_clf, X, node_id)
+        
         target_mean = None
         if target_values is not None and len(sample_idx) > 0:
             target_mean = np.mean(target_values[sample_idx])
-
+        
         if tree_.feature[node_id] != _tree.TREE_UNDEFINED:
             fname = feature_names[tree_.feature[node_id]]
             thr = tree_.threshold[node_id]
+            
+            # Обрезаем длинные названия признаков
             if len(fname) > 25:
                 fname = fname[:22] + "..."
-            lines = [f"{fname} ≤ {thr:.2f}", f"Samples: {samples_count}"]
+            
+            # Безопасное получение столбца признака
+            if isinstance(X, pd.DataFrame):
+                col_values = X.iloc[:, tree_.feature[node_id]].values
+            else:
+                col_values = np.array(X)
+                if col_values.ndim > 1:
+                    col_values = col_values[:, tree_.feature[node_id]]
+            
+            # Проверка бинарного признака
+            is_binary = np.all(np.isin(np.unique(col_values), [0, 1])) or len(np.unique(col_values)) == 2
+            
+            # Логика текста узла
+            if is_binary and abs(thr - 0.5) < 1e-6:
+                node_text = f"{fname}"
+            else:
+                node_text = f"{fname} ≤ {thr:.2f}"
+            
+            lines = [node_text, f"Samples: {samples_count}"]
             if target_mean is not None:
                 lines.append(f"Mean: {target_mean:.2f}")
-            # ✅ Исправленные корректные RGBA цвета
+            
+            # Цвета для непрерывных/регрессионных узлов
             color, border = "rgba(216,216,218,0.8)", "rgba(120,120,120,0.8)"
+        
         else:
             cls_idx = int(np.argmax(tree_.value[node_id]))
             cname = class_names[cls_idx]
             lines = [f"{cname}", f"Samples: {samples_count}"]
             if target_mean is not None:
                 lines.append(f"Mean: {target_mean:.2f}")
+            
+            # Цвета для классификационных узлов
             color = cluster_colors.get(cname, 'lightgreen')
             border = 'darkgreen'
+        
         return lines, color, border
 
     # === Список реально присутствующих кластеров ===
