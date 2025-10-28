@@ -244,240 +244,160 @@ def get_node_samples(tree_clf, X, node_id):
 
 
 def plot_decision_tree_interactive(tree_clf, X, y, target_values, feature_names, class_names,
-                                   base_width=1200, per_leaf_width=200, max_width=10000):
+                                   base_width=1200, per_leaf_width=300, max_width=20000):
     """
     Интерактивная визуализация дерева решений с автонастройкой ширины,
     цветной разметкой ветвей (синяя — Да, красная — Нет)
     и корректной легендой по реально присутствующим кластерам.
     """
-
     tree_ = tree_clf.tree_
 
-    # === Цвета кластеров ===
+    # Цвета для кластеров
     cluster_colors = {
-        'Cluster 1': '#FF6B6B',
-        'Cluster 2': "#C44EF7",
-        'Cluster 3': "#5CA968",
-        'Cluster 4': "#DCD96E",
-        'Cluster 5': "#F0BE52",
-        'Cluster 6': '#DDA0DD',
-        'Cluster 7': "#3B2E3C",
-        'Cluster 8': "#755656",
-        'Cluster 9': "#4C8598",
-        'Cluster 10': "#3F543C"
+        cname: color for cname, color in zip(class_names,
+            ['#FF6B6B','#C44EF7','#5CA968','#DCD96E','#F0BE52',
+             '#DDA0DD','#3B2E3C','#755656','#4C8598','#3F543C'])
     }
 
-    # === Подсчёт числа листьев и глубины ===
-    def compute_meta(node=0, depth=0):
-        if tree_.feature[node] == _tree.TREE_UNDEFINED:
-            return 1, depth
-        l_count, l_depth = compute_meta(tree_.children_left[node], depth + 1)
-        r_count, r_depth = compute_meta(tree_.children_right[node], depth + 1)
-        return l_count + r_count, max(l_depth, r_depth)
-
-    total_leaves, max_depth = compute_meta(0, 0)
-
-    # === Автоматическая настройка расстояния и ширины ===
-    spacing_factor = 1.5 + np.log2(total_leaves + 1) * 0.3
-    fig_width = int(min(max_width, base_width + per_leaf_width * total_leaves))
-
-    # === In-order размещение узлов ===
+    # Считаем листья и задаём горизонтальные позиции
     node_info = {}
     leaf_counter = {'i': 0}
-    raw_gap = spacing_factor
 
     def assign_x_inorder(node, depth=0):
         if tree_.feature[node] == _tree.TREE_UNDEFINED:
             i = leaf_counter['i']
-            raw_x = i * raw_gap
+            node_info[node] = {'x_leaf': i, 'depth': depth, 'is_leaf': True}
             leaf_counter['i'] += 1
-            node_info[node] = {'raw_x': raw_x, 'depth': depth, 'is_leaf': True}
-            return raw_x
+            return i
         else:
-            lx = assign_x_inorder(tree_.children_left[node], depth + 1)
-            rx = assign_x_inorder(tree_.children_right[node], depth + 1)
-            mid = (lx + rx) / 2
-            node_info[node] = {'raw_x': mid, 'depth': depth, 'is_leaf': False}
+            lx = assign_x_inorder(tree_.children_left[node], depth+1)
+            rx = assign_x_inorder(tree_.children_right[node], depth+1)
+            mid = (lx + rx)/2
+            node_info[node] = {'x_leaf': mid, 'depth': depth, 'is_leaf': False}
             return mid
 
     assign_x_inorder(0)
 
-    xs = np.array([v['raw_x'] for v in node_info.values()])
+    # Горизонтальное масштабирование: динамический шаг, чтобы листья не накладывались
+    xs = np.array([v['x_leaf'] for v in node_info.values()])
     xmin, xmax = xs.min(), xs.max()
-    scale = 1.0 / (xmax - xmin) if xmax > xmin else 1.0
+    total_leaves = leaf_counter['i']
+    if total_leaves <= 1:
+        scale = 1.0
+    else:
+        scale = min(1.0, 1.0/(xmax-xmin))  # масштабируем так, чтобы уместить все листья
 
     for nid, v in node_info.items():
-        v['x'] = (v['raw_x'] - xmin) * scale
-        v['y'] = 1.0 - v['depth'] / (max_depth + 1)
+        v['x'] = 0.05 + 0.9*(v['x_leaf']-xmin)*scale
+        v['y'] = 1.0 - v['depth'] / (max(vv['depth'] for vv in node_info.values()) + 1)
 
-    # === получить индексы выборки для узла ===
-    def get_node_samples(tree_clf, X, node_id):
-        node_indicator = tree_clf.decision_path(X)
-        return np.where(node_indicator[:, node_id].toarray().ravel() == 1)[0]
-
-    # === текст и цвет узла ===
+    # Текст и цвет узла
     def get_node_text_and_color(node_id):
         samples_count = tree_.n_node_samples[node_id]
-        sample_idx = get_node_samples(tree_clf, X, node_id)
-        
-        target_mean = None
-        if target_values is not None and len(sample_idx) > 0:
-            target_mean = np.mean(target_values[sample_idx])
-        
+        sample_idx = np.where(tree_clf.decision_path(X)[:, node_id].toarray().ravel() == 1)[0]
+        target_mean = np.mean(target_values[sample_idx]) if target_values is not None and len(sample_idx)>0 else None
+
         if tree_.feature[node_id] != _tree.TREE_UNDEFINED:
             fname = feature_names[tree_.feature[node_id]]
             thr = tree_.threshold[node_id]
-            
-            # Обрезаем длинные названия признаков
-            if len(fname) > 25:
-                fname = fname[:22] + "..."
-            
-            # Безопасное получение столбца признака
-            if isinstance(X, pd.DataFrame):
-                col_values = X.iloc[:, tree_.feature[node_id]].values
-            else:
-                col_values = np.array(X)
-                if col_values.ndim > 1:
-                    col_values = col_values[:, tree_.feature[node_id]]
-            
-            # Проверка бинарного признака
-            is_binary = np.all(np.isin(np.unique(col_values), [0, 1])) or len(np.unique(col_values)) == 2
-            
-            # Логика текста узла
-            if is_binary and abs(thr - 0.5) < 1e-6:
-                node_text = f"{fname}"
-            else:
-                node_text = f"{fname} ≤ {thr:.2f}"
-            
+            col_values = X.iloc[:, tree_.feature[node_id]].values if isinstance(X, pd.DataFrame) else X[:, tree_.feature[node_id]]
+            is_binary = np.all(np.isin(np.unique(col_values), [0,1])) or len(np.unique(col_values))==2
+            node_text = f"{fname}" if is_binary and abs(thr-0.5)<1e-6 else f"{fname} ≤ {thr:.2f}"
             lines = [node_text, f"Samples: {samples_count}"]
             if target_mean is not None:
                 lines.append(f"Mean: {target_mean:.2f}")
-            
-            # Цвета для непрерывных/регрессионных узлов
             color, border = "rgba(216,216,218,0.8)", "rgba(120,120,120,0.8)"
-        
         else:
             cls_idx = int(np.argmax(tree_.value[node_id]))
             cname = class_names[cls_idx]
             lines = [f"{cname}", f"Samples: {samples_count}"]
             if target_mean is not None:
                 lines.append(f"Mean: {target_mean:.2f}")
-            
-            # Цвета для классификационных узлов
-            color = cluster_colors.get(cname, 'lightgreen')
+            color = cluster_colors.get(cname,'lightgreen')
             border = 'darkgreen'
-        
-        return lines, color, border
+        hover_text = "<br>".join(lines)
+        return lines, hover_text, color, border
 
-    # === Список реально присутствующих кластеров ===
+    fig = go.Figure()
+    rect_w, rect_h = 0.08, 0.05
+
     present_classes = []
-    for nid, info in node_info.items():
+
+    def add_nodes_edges(node):
+        info = node_info[node]
+        x, y = info['x'], info['y']
+        lines, hover_text, color, border = get_node_text_and_color(node)
+        rect_h_local = rect_h + (len(lines)-1)*0.012
+
         if info['is_leaf']:
-            cname = class_names[int(np.argmax(tree_.value[nid]))]
+            cname = lines[0]
             if cname not in present_classes:
                 present_classes.append(cname)
 
-    # === Построение графика ===
-    fig = go.Figure()
+        # Прямоугольник узла
+        fig.add_shape(type="rect",
+                      x0=x-rect_w/2, y0=y-rect_h_local/2,
+                      x1=x+rect_w/2, y1=y+rect_h_local/2,
+                      line=dict(color=border,width=2),
+                      fillcolor=color, opacity=0.95)
 
-    rect_w, rect_h = 0.08, 0.05
-
-    def add_nodes_and_edges(node):
-        info = node_info[node]
-        x, y = info['x'], info['y']
-        text, color, border = get_node_text_and_color(node)
-        rect_h_local = rect_h + (len(text) - 1) * 0.012
-
-        fig.add_shape(
-            type="rect",
-            x0=x - rect_w / 2, y0=y - rect_h_local / 2,
-            x1=x + rect_w / 2, y1=y + rect_h_local / 2,
-            line=dict(color=border, width=2),
-            fillcolor=color, opacity=0.95
-        )
-
-        for i, t in enumerate(text):
-            ty = y + rect_h_local / 2 - (i + 1) * rect_h_local / (len(text) + 1)
+        # Текст внутри
+        for i, t in enumerate(lines):
+            ty = y + rect_h_local/2 - (i+1)*rect_h_local/(len(lines)+1)
             fig.add_annotation(x=x, y=ty, text=t, showarrow=False,
-                               font=dict(size=11, color='black'), align='center')
+                               font=dict(size=11,color='black'), align='center')
 
-        if tree_.feature[node] != _tree.TREE_UNDEFINED:
+        # Hover-аннотация
+        fig.add_trace(go.Scatter(
+            x=[x], y=[y], mode='markers',
+            marker=dict(size=rect_w*120,color='rgba(0,0,0,0)'),
+            hoverinfo='text', hovertext=hover_text,
+            showlegend=False
+        ))
+
+        if not info['is_leaf']:
             left, right = tree_.children_left[node], tree_.children_right[node]
             lx, ly = node_info[left]['x'], node_info[left]['y']
             rx, ry = node_info[right]['x'], node_info[right]['y']
 
-            # ✅ Синие линии для "Да" (левая ветвь), красные для "Нет" (правая ветвь)
-            fig.add_trace(go.Scatter(
-                x=[x, lx], y=[y - rect_h_local / 2, ly + rect_h / 2],
-                mode='lines', line=dict(width=2, color='blue'),
-                hoverinfo='none', showlegend=False
-            ))
-            fig.add_trace(go.Scatter(
-                x=[x, rx], y=[y - rect_h_local / 2, ry + rect_h / 2],
-                mode='lines', line=dict(width=2, color='red'),
-                hoverinfo='none', showlegend=False
-            ))
+            # Линии "Да"/"Нет" с легендой только один раз
+            if node == 0:  # добавим один раз в легенду
+                fig.add_trace(go.Scatter(x=[x,lx],y=[y-rect_h_local/2,ly+rect_h/2],
+                                         mode='lines', line=dict(width=2,color='blue'),
+                                         hoverinfo='none', name='Да (≤ порога)'))
+                fig.add_trace(go.Scatter(x=[x,rx],y=[y-rect_h_local/2,ry+rect_h/2],
+                                         mode='lines', line=dict(width=2,color='red'),
+                                         hoverinfo='none', name='Нет (> порога)'))
+            else:
+                fig.add_trace(go.Scatter(x=[x,lx],y=[y-rect_h_local/2,ly+rect_h/2],
+                                         mode='lines', line=dict(width=2,color='blue'),
+                                         hoverinfo='none', showlegend=False))
+                fig.add_trace(go.Scatter(x=[x,rx],y=[y-rect_h_local/2,ry+rect_h/2],
+                                         mode='lines', line=dict(width=2,color='red'),
+                                         hoverinfo='none', showlegend=False))
 
-            # Подписи "Да"/"Нет"
-            midx_left, midy_left = (x + lx) / 2, (y + ly) / 2
-            midx_right, midy_right = (x + rx) / 2, (y + ry) / 2
-            fig.add_annotation(x=midx_left, y=midy_left, text="Да", showarrow=False,
-                               font=dict(size=10, color='blue'))
-            fig.add_annotation(x=midx_right, y=midy_right, text="Нет", showarrow=False,
-                               font=dict(size=10, color='red'))
+            add_nodes_edges(left)
+            add_nodes_edges(right)
 
-            add_nodes_and_edges(left)
-            add_nodes_and_edges(right)
+    add_nodes_edges(0)
 
-    add_nodes_and_edges(0)
-
-    # === Легенда по реально используемым кластерам ===
+    # Легенда по реально используемым классам
     for cname in present_classes:
-        color = cluster_colors.get(cname, '#CCCCCC')
         fig.add_trace(go.Scatter(
-            x=[None], y=[None],
-            mode='markers',
-            marker=dict(size=14, color=color, line=dict(width=1, color='black')),
+            x=[None], y=[None], mode='markers',
+            marker=dict(size=14, color=cluster_colors[cname], line=dict(width=1,color='black')),
             name=cname
         ))
 
-    # === Добавим легенду для ветвей "Да"/"Нет" ===
-    fig.add_trace(go.Scatter(
-        x=[None], y=[None], mode='lines',
-        line=dict(width=2, color='blue'),
-        name='Да (≤ порога)'
-    ))
-    fig.add_trace(go.Scatter(
-        x=[None], y=[None], mode='lines',
-        line=dict(width=2, color='red'),
-        name='Нет (> порога)'
-    ))
-
-    # === Оформление ===
     fig.update_layout(
-        title=dict(
-            text='<b>Дерево решений для предсказания кластеров</b>',
-            x=0.4, font=dict(size=20)
-        ),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
-                   range=[-0.05, 1.05]),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
-                   range=[-0.05, 1.15]),
-        width=fig_width,
+        title=dict(text='<b>Дерево решений с кластерами</b>', x=0.5, xanchor='center', font=dict(size=20)),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        width=min(base_width + per_leaf_width*leaf_counter['i'], max_width),
         height=1300,
         plot_bgcolor='white',
-        hovermode='closest',
-        showlegend=True,
-        legend=dict(
-            title='Обозначения',
-            x=1.02, y=1,
-            bgcolor='rgba(255,255,255,0.9)',
-            bordercolor='black',
-            borderwidth=1,
-            font=dict(color='black', size=12)
-        )
+        hovermode='closest'
     )
-
     return fig
 
 
@@ -1053,3 +973,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
